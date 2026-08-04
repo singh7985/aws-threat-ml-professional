@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autonomous-cloud-threat-ml"
+version = "0.1.0"
+description = "AWS, Python, ML, and AI cloud-threat detection platform"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "Your Name" }]
+dependencies = [
+  "boto3>=1.35,<2",
+  "botocore>=1.35,<2",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.5,<3",
+  "python-dotenv>=1,<2",
+  "email-validator>=2.2,<3",
+  "numpy>=2.0,<3",
+  "pandas>=2.2,<3",
+  "pyarrow>=17,<25",
+  "scikit-learn>=1.5,<2",
+  "joblib>=1.4,<2",
+  "orjson>=3.10,<4",
+  "tenacity>=9,<10",
+  "structlog>=24,<26",
+  "aws-lambda-powertools>=3,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-cov>=5,<7",
+  "pytest-mock>=3.14,<4",
+  "hypothesis>=6,<7",
+  "ruff>=0.9,<1",
+  "mypy>=1.13,<2",
+  "pre-commit>=4,<5",
+  "bandit>=1.8,<2",
+  "pip-audit>=2.8,<3",
+]
+infra = [
+  "aws-cdk-lib>=2,<3",
+  "constructs>=10,<11",
+]
+
+[project.scripts]
+threat-ml = "threat_ml.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["threat_ml"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["cdk.out"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["src", "infrastructure"]
+exclude = ["cdk.out"]
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aws_cdk", "aws_cdk.*", "constructs", "constructs.*"]
+ignore_missing_imports = true
+follow_untyped_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "cdk.out"]

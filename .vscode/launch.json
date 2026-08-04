@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Generate synthetic events",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "threat_ml.cli",
+      "args": [
+        "generate",
+        "--output",
+        "data/raw/security_events.jsonl",
+        "--normal",
+        "100",
+        "--suspicious",
+        "10"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Check environment",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/check_environment.py",
+      "console": "integratedTerminal"
+    }
+  ]
+}

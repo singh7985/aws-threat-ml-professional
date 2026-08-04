@@ -1,0 +1,14 @@
+{
+  "name": "autonomous-cloud-threat-ml-infrastructure",
+  "private": true,
+  "version": "0.1.0",
+  "devDependencies": {
+    "aws-cdk": "^2.0.0"
+  },
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  }
+}
