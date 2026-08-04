@@ -1,23 +1,46 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from aws_lambda_powertools import Logger
 
+from threat_ml.predict_event import predict_event
+
 logger = Logger(service="threat-ml-scorer")
+
+# Retarget absolute paths for Lambda container expectations
+import threat_ml.predict_event
+threat_ml.predict_event.MODEL_PATH = Path("/var/task/models/model.joblib")
+threat_ml.predict_event.FEATURE_MANIFEST_PATH = Path("/var/task/models/feature_manifest.json")
 
 
 @logger.inject_lambda_context(clear_state=True)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Starter handler; add validation, feature engineering, and ML inference next."""
+    """Starter handler; ML added securely."""
+    
     if event.get("health_check") is True:
-        return {"statusCode": 200, "body": {"status": "healthy"}}
+        return {"statusCode": 200, "body": json.dumps({"status": "healthy"})}
 
-    logger.info("Received event", extra={"event": event})
-    return {
-        "statusCode": 202,
-        "body": {
-            "message": "Starter scorer received the event",
-            "next_step": "Add Pydantic validation, features, and model inference",
-        },
-    }
+    try:
+        if "body" in event and isinstance(event["body"], str):
+            payload = json.loads(event["body"])
+        else:
+            payload = event
+
+        prediction_result = predict_event(payload)
+        
+        logger.info("Executed successfully", extra={"prediction_result": prediction_result})
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps(prediction_result)
+        }
+    
+    except Exception as e:
+        logger.exception("Error scoring the threat.")
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": str(e)})
+        }

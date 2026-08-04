@@ -1,0 +1,14 @@
+{
+  "hour_of_day": 14.0,
+  "is_weekend": 0.0,
+  "failed_call": 0.0,
+  "sensitive_operation": 1.0,
+  "unusual_hour": 0.0,
+  "external_ip": 1.0,
+  "outside_home_region": 0.0,
+  "calls_last_5m": 2.0,
+  "failed_calls_last_5m": 0.0,
+  "unique_services_last_1h": 1.0,
+  "iam_calls_last_1h": 3.0,
+  "api_risk_score": 10.0
+}

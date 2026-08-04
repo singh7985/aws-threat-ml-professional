@@ -1,0 +1,22 @@
+{
+  "model_name": "AWS Threat Isolation Forest",
+  "model_version": "0.1.0",
+  "algorithm": "IsolationForest",
+  "feature_columns": [
+    "hour_of_day",
+    "is_weekend",
+    "failed_call",
+    "sensitive_operation",
+    "unusual_hour",
+    "external_ip",
+    "outside_home_region",
+    "calls_last_5m",
+    "failed_calls_last_5m",
+    "unique_services_last_1h",
+    "iam_calls_last_1h",
+    "api_risk_score"
+  ],
+  "target_column": "label_binary",
+  "normal_label": 0,
+  "suspicious_label": 1
+}

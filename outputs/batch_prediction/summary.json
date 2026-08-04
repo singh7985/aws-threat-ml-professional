@@ -1,0 +1,24 @@
+{
+  "total_events": 1000,
+  "low_risk_events": 826,
+  "medium_risk_events": 98,
+  "high_risk_events": 76,
+  "ml_flagged_anomalies": 186,
+  "average_anomaly_score": 0.3927,
+  "average_final_risk_score": 0.3203,
+  "evaluation": {
+    "precision": 0.569,
+    "recall": 1.0,
+    "f1_score": 0.7253,
+    "confusion_matrix": [
+      [
+        826,
+        75
+      ],
+      [
+        0,
+        99
+      ]
+    ]
+  }
+}
