@@ -1,9 +1,21 @@
+# The build context is the repository root, and its hash decides the ECR image
+# tag. Anything not needed at runtime is excluded so incidental local files do
+# not churn the image tag and trigger pointless Lambda redeployments.
 .git
+.gitignore
 .github
 .venv
 .venv-*
+venv
 .env
 .vscode
+.idea
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
 __pycache__
 *.pyc
 *.pyo
@@ -19,4 +31,23 @@ data
 tests
 docs
 notebooks
+scripts
+node_modules
+build
+dist
+*.egg-info
 *.log
+
+# Infrastructure and tooling are not used by the Lambda runtime
+infrastructure
+mlops
+agent
+Makefile
+*.md
+*.toml
+*.lock
+package*.json
+cdk.json
+.pre-commit-config.yaml
+.editorconfig
+dashboard.py

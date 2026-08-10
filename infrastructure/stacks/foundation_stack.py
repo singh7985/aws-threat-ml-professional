@@ -8,9 +8,6 @@ from aws_cdk import (
     Tags,
 )
 from aws_cdk import (
-    aws_dynamodb as dynamodb,
-)
-from aws_cdk import (
     aws_s3 as s3,
 )
 from aws_cdk import (
@@ -60,7 +57,7 @@ class FoundationStack(Stack):
             ],
         )
 
-        dead_letter_queue = sqs.Queue(
+        self.dead_letter_queue = sqs.Queue(
             self,
             "ProcessingDeadLetterQueue",
             encryption=sqs.QueueEncryption.SQS_MANAGED,
@@ -68,7 +65,7 @@ class FoundationStack(Stack):
             removal_policy=removal_policy,
         )
 
-        processing_queue = sqs.Queue(
+        self.processing_queue = sqs.Queue(
             self,
             "ProcessingQueue",
             encryption=sqs.QueueEncryption.SQS_MANAGED,
@@ -76,31 +73,25 @@ class FoundationStack(Stack):
             retention_period=Duration.days(4),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=5,
-                queue=dead_letter_queue,
+                queue=self.dead_letter_queue,
             ),
             removal_policy=removal_policy,
         )
 
-        incidents_table = dynamodb.Table(
-            self,
-            "IncidentsTable",
-            partition_key=dynamodb.Attribute(
-                name="incident_id",
-                type=dynamodb.AttributeType.STRING,
-            ),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            encryption=dynamodb.TableEncryption.AWS_MANAGED,
-            point_in_time_recovery=not is_dev,
-            removal_policy=removal_policy,
-        )
+        # The incidents table lives in DataStack (physical name
+        # "intelligent-aws-threat-incidents"). This stack used to declare a second,
+        # separate table that nothing ever read: app.py wires DataStack's table into
+        # the scorer, so the one here was created, billed, and left permanently empty.
+        # Removed rather than kept "just in case" -- two tables with the same purpose
+        # is how incidents end up written to one and queried from the other.
 
-        alerts_topic = sns.Topic(
+        self.alerts_topic = sns.Topic(
             self,
             "AlertsTopic",
             display_name="Autonomous Cloud Threat ML Alerts",
         )
         if alert_email and alert_email != "replace-me@example.com":
-            alerts_topic.add_subscription(subscriptions.EmailSubscription(alert_email))
+            self.alerts_topic.add_subscription(subscriptions.EmailSubscription(alert_email))
 
         for key, value in {
             "Project": project_name,
@@ -110,7 +101,6 @@ class FoundationStack(Stack):
             Tags.of(self).add(key, value)
 
         CfnOutput(self, "RawEventsBucketName", value=raw_events_bucket.bucket_name)
-        CfnOutput(self, "ProcessingQueueUrl", value=processing_queue.queue_url)
-        CfnOutput(self, "DeadLetterQueueUrl", value=dead_letter_queue.queue_url)
-        CfnOutput(self, "IncidentsTableName", value=incidents_table.table_name)
-        CfnOutput(self, "AlertsTopicArn", value=alerts_topic.topic_arn)
+        CfnOutput(self, "ProcessingQueueUrl", value=self.processing_queue.queue_url)
+        CfnOutput(self, "DeadLetterQueueUrl", value=self.dead_letter_queue.queue_url)
+        CfnOutput(self, "AlertsTopicArn", value=self.alerts_topic.topic_arn)
