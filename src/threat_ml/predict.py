@@ -9,11 +9,8 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from threat_ml.predict_event import (
-    calculate_rule_score,
-    convert_decision_to_anomaly_score,
-    determine_risk_level,
-    is_anomalous,
     read_anomaly_threshold,
+    score_feature_vector,
 )
 from threat_ml.schemas import IncidentPrediction, SecurityEvent
 
@@ -82,31 +79,20 @@ class ThreatPredictor:
         # event -- three different answers from one system.
         decision_value = float(self.model.decision_function(features)[0])
 
-        anomaly_score = convert_decision_to_anomaly_score(
-            decision_value,
-            self.anomaly_threshold,
+        payload = {column: float(features.iloc[0][column]) for column in self.feature_columns}
+
+        scored = score_feature_vector(
+            decision_value=decision_value,
+            features=payload,
+            anomaly_threshold=self.anomaly_threshold,
         )
 
-        payload = {column: float(features.iloc[0][column]) for column in self.feature_columns}
-        rule_score, reasons = calculate_rule_score(payload)
-
-        risk_score = min(1.0, 0.70 * anomaly_score + 0.30 * rule_score)
-
-        if is_anomalous(decision_value, self.anomaly_threshold):
-            reasons.insert(0, "The machine-learning model marked the behavior as unusual.")
-
-        if not reasons:
-            reasons.append("No major security-warning rules were triggered.")
-
-        # 4. Classify the final output
-        risk_level = determine_risk_level(risk_score)
-
-        # 5. Return the fully-validated Pydantic result object
+        # 4. Return the fully-validated Pydantic result object
         return IncidentPrediction(
             event_id=event.event_id,
-            anomaly_score=anomaly_score,
-            risk_score=risk_score,
-            risk_level=risk_level,
-            reasons=tuple(reasons),
+            anomaly_score=scored["anomaly_score"],
+            risk_score=scored["final_risk_score"],
+            risk_level=scored["risk_level"],
+            reasons=tuple(scored["reasons"]),
             model_version=self.model_version,
         )

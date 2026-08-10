@@ -16,11 +16,8 @@ from sklearn.metrics import (
 )
 
 from threat_ml.predict_event import (
-    calculate_rule_score,
-    convert_decision_to_anomaly_score,
-    determine_risk_level,
-    is_anomalous,
     read_anomaly_threshold,
+    score_feature_vector,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -146,18 +143,13 @@ def score_dataset(
 
         decision_value = float(decision_values[position])
 
-        model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
-
-        anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
-
-        rule_score, reasons = calculate_rule_score(payload)
-
-        final_risk_score = min(
-            1.0,
-            0.70 * anomaly_score + 0.30 * rule_score,
+        # Same scoring implementation the Lambda uses, so a batch run and a live
+        # invocation cannot disagree about the same row.
+        scored = score_feature_vector(
+            decision_value=decision_value,
+            features=payload,
+            anomaly_threshold=anomaly_threshold,
         )
-
-        risk_level = determine_risk_level(final_risk_score)
 
         output_row: dict[str, Any] = {}
 
@@ -183,30 +175,7 @@ def score_dataset(
                 else:
                     output_row[column] = value
 
-        output_row.update(
-            {
-                "model_prediction": ("suspicious" if model_flagged_anomaly else "normal"),
-                "model_flagged_anomaly": model_flagged_anomaly,
-                "model_decision_value": round(
-                    decision_value,
-                    6,
-                ),
-                "anomaly_score": round(
-                    anomaly_score,
-                    4,
-                ),
-                "rule_score": round(
-                    rule_score,
-                    4,
-                ),
-                "final_risk_score": round(
-                    final_risk_score,
-                    4,
-                ),
-                "risk_level": risk_level,
-                "reasons": reasons,
-            }
-        )
+        output_row.update(scored)
 
         prediction_rows.append(output_row)
 

@@ -20,11 +20,8 @@ from sklearn.ensemble import IsolationForest
 
 from threat_ml.contracts import ScoringMessage
 from threat_ml.predict_event import (
-    calculate_rule_score,
-    convert_decision_to_anomaly_score,
-    determine_risk_level,
-    is_anomalous,
     read_anomaly_threshold,
+    score_feature_vector,
 )
 
 # Metadata fields promoted to top-level DynamoDB attributes; anything else the
@@ -182,20 +179,19 @@ def score_features(features: dict[str, float]) -> dict[str, Any]:
     anomaly_threshold = read_anomaly_threshold(manifest)
 
     decision_value = float(model.decision_function(feature_frame)[0])
-    model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
-    anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
-    rule_score, reasons = calculate_rule_score(features)
 
-    final_risk_score = min(1.0, 0.70 * anomaly_score + 0.30 * rule_score)
-    risk_level = determine_risk_level(final_risk_score)
-
-    if model_flagged_anomaly:
-        reasons.insert(0, "The machine-learning model marked the behavior as unusual.")
-    if not reasons:
-        reasons.append("No major security warning was triggered.")
+    # One scoring implementation, shared with the CLI, batch scorer and
+    # ThreatPredictor. The Lambda adds telemetry and artifact provenance around
+    # it but does not re-derive any of the arithmetic.
+    result = score_feature_vector(
+        decision_value=decision_value,
+        features=features,
+        anomaly_threshold=anomaly_threshold,
+    )
 
     # Record metrics for CloudWatch
     METRICS.add_metric(name="EventsScored", unit=MetricUnit.Count, value=1)
+    risk_level = result["risk_level"]
     if risk_level == "HIGH":
         METRICS.add_metric(name="HighRiskEvents", unit=MetricUnit.Count, value=1)
     elif risk_level == "MEDIUM":
@@ -206,14 +202,7 @@ def score_features(features: dict[str, float]) -> dict[str, Any]:
     return {
         "model_name": manifest.get("model_name", "AWS Threat Isolation Forest"),
         "model_version": manifest.get("model_version", "unknown"),
-        "model_prediction": "suspicious" if model_flagged_anomaly else "normal",
-        "model_flagged_anomaly": model_flagged_anomaly,
-        "model_decision_value": round(decision_value, 6),
-        "anomaly_score": round(anomaly_score, 4),
-        "rule_score": round(rule_score, 4),
-        "final_risk_score": round(final_risk_score, 4),
-        "risk_level": risk_level,
-        "reasons": reasons,
+        **result,
     }
 
 

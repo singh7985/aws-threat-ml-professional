@@ -239,6 +239,63 @@ def determine_risk_level(risk_score: float) -> str:
     return "LOW"
 
 
+# Blend weights. The model contributes the larger share; the deterministic rules
+# keep a known-bad event scoring high even when the forest finds it ordinary.
+ANOMALY_WEIGHT = 0.70
+RULE_WEIGHT = 0.30
+
+MODEL_FLAGGED_REASON = "The machine-learning model marked the behavior as unusual."
+NO_FINDINGS_REASON = "No major security-warning rules were triggered."
+
+
+def score_feature_vector(
+    decision_value: float,
+    features: dict[str, Any],
+    anomaly_threshold: float,
+) -> dict[str, Any]:
+    """Turn one model decision plus its feature vector into a scored result.
+
+    **This is the single scoring implementation.** The CLI, batch scorer,
+    container and deployed Lambda all call it, so a change to the blend, the
+    thresholds or the reason wording lands everywhere at once.
+
+    It exists because the composition used to be copy-pasted into four modules.
+    The shared primitives below were already common, but each caller re-applied
+    the weights itself, and the wording had already drifted -- the Lambda said
+    "No major security warning was triggered" while the CLI said "No major
+    security-warning rules were triggered" for the same event.
+
+    Takes a feature vector only. Identity never reaches scoring.
+    """
+
+    anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
+    model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
+
+    rule_score, reasons = calculate_rule_score(features)
+
+    final_risk_score = min(
+        1.0,
+        ANOMALY_WEIGHT * anomaly_score + RULE_WEIGHT * rule_score,
+    )
+
+    if model_flagged_anomaly:
+        reasons.insert(0, MODEL_FLAGGED_REASON)
+
+    if not reasons:
+        reasons.append(NO_FINDINGS_REASON)
+
+    return {
+        "model_prediction": "suspicious" if model_flagged_anomaly else "normal",
+        "model_flagged_anomaly": model_flagged_anomaly,
+        "model_decision_value": round(decision_value, 6),
+        "anomaly_score": round(anomaly_score, 4),
+        "rule_score": round(rule_score, 4),
+        "final_risk_score": round(final_risk_score, 4),
+        "risk_level": determine_risk_level(final_risk_score),
+        "reasons": reasons,
+    }
+
+
 def predict_event(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -255,54 +312,15 @@ def predict_event(
 
     decision_value = float(model.decision_function(features)[0])
 
-    # The calibrated cutoff replaces IsolationForest.predict(), whose boundary is
-    # fixed by `contamination` rather than by the observed score distribution.
-    model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
-
-    anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
-
-    rule_score, reasons = calculate_rule_score(payload)
-
-    final_risk_score = min(
-        1.0,
-        0.70 * anomaly_score + 0.30 * rule_score,
+    # Delegates to the one scoring implementation so the CLI cannot drift from
+    # the Lambda. The calibrated cutoff replaces IsolationForest.predict(),
+    # whose boundary is fixed by `contamination` rather than by the observed
+    # score distribution.
+    return score_feature_vector(
+        decision_value=decision_value,
+        features=payload,
+        anomaly_threshold=anomaly_threshold,
     )
-
-    risk_level = determine_risk_level(final_risk_score)
-
-    model_label = "suspicious" if model_flagged_anomaly else "normal"
-
-    if model_flagged_anomaly:
-        reasons.insert(
-            0,
-            "The machine-learning model marked the behavior as unusual.",
-        )
-
-    if not reasons:
-        reasons.append("No major security-warning rules were triggered.")
-
-    return {
-        "model_prediction": model_label,
-        "model_flagged_anomaly": model_flagged_anomaly,
-        "model_decision_value": round(
-            decision_value,
-            6,
-        ),
-        "anomaly_score": round(
-            anomaly_score,
-            4,
-        ),
-        "rule_score": round(
-            rule_score,
-            4,
-        ),
-        "final_risk_score": round(
-            final_risk_score,
-            4,
-        ),
-        "risk_level": risk_level,
-        "reasons": reasons,
-    }
 
 
 def parse_arguments() -> argparse.Namespace:
