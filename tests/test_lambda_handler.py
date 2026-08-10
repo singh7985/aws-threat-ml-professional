@@ -75,13 +75,13 @@ os.environ["MODEL_DIRECTORY"] = _build_model_fixture()
 from services.scorer.handler import (  # noqa: E402
     build_incident,
     lambda_handler,
-    parse_envelope,
+    parse_message,
     score_features,
 )
 
 
 def load_test_event(name: str) -> dict[str, Any]:
-    """Load one scoring envelope fixture."""
+    """Load one scoring message fixture."""
     path = PROJECT_ROOT / "data" / "test" / name
 
     return dict(json.loads(path.read_text(encoding="utf-8")))
@@ -116,10 +116,10 @@ def test_high_risk_scores_above_normal() -> None:
     assert high_risk["final_risk_score"] > normal["final_risk_score"]
 
 
-def test_envelope_metadata_reaches_the_stored_incident() -> None:
+def test_message_metadata_reaches_the_stored_incident() -> None:
     """The whole point of the contract: identity survives into DynamoDB."""
-    envelope = parse_envelope(load_test_event("high_risk_event.json"))
-    incident = build_incident(envelope, score_features(envelope.features))
+    message = parse_message(load_test_event("high_risk_event.json"))
+    incident = build_incident(message, score_features(message.numeric_features()))
 
     assert incident["principal_id"] == "developer-04"
     assert incident["source_ip"] == "203.0.113.77"
@@ -130,21 +130,76 @@ def test_envelope_metadata_reaches_the_stored_incident() -> None:
     assert incident["schema_version"] == "1.0"
     # Scoring outcome and the exact vector that produced it.
     assert incident["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
-    assert set(incident["features"]) == set(envelope.features)
+    assert set(incident["features"]) == set(message.features)
 
 
 def test_naked_feature_vector_is_rejected_with_guidance() -> None:
     """The old contract must fail loudly, not score without identity."""
-    with pytest.raises(ValueError, match="not a scoring envelope"):
-        parse_envelope(load_features("high_risk_event.json"))
+    with pytest.raises(ValueError, match="not a scoring message"):
+        parse_message(load_features("high_risk_event.json"))
 
 
-def test_envelope_requires_identity_fields() -> None:
+def test_individual_identity_fields_may_be_absent() -> None:
+    """Real CloudTrail records do not always carry every field."""
     payload = load_test_event("high_risk_event.json")
     del payload["event"]["principal_id"]
+    del payload["event"]["service"]
 
-    with pytest.raises(ValueError, match="Invalid scoring envelope"):
-        parse_envelope(payload)
+    message = parse_message(payload)
+
+    assert message.event.principal_id is None
+    assert message.event.source_ip == "203.0.113.77"
+    # Absent fields are omitted from storage, never written as null, so a scan
+    # cannot match two incidents on a shared missing value.
+    incident = build_incident(message, score_features(message.numeric_features()))
+    assert "principal_id" not in incident
+    assert "service" not in incident
+    assert incident["source_ip"] == "203.0.113.77"
+
+
+def test_message_requires_at_least_one_identity_field() -> None:
+    """An event with no correlatable field can never be linked to anything."""
+    payload = load_test_event("high_risk_event.json")
+    for field in ("principal_id", "source_ip", "event_name", "service", "region"):
+        payload["event"].pop(field, None)
+
+    with pytest.raises(ValueError, match="at least one of"):
+        parse_message(payload)
+
+
+def test_unknown_top_level_key_is_rejected() -> None:
+    """A typo such as 'feature' must fail at the boundary, not half-process."""
+    payload = load_test_event("high_risk_event.json")
+    payload["featurez"] = {}
+
+    with pytest.raises(ValueError, match="Invalid scoring message"):
+        parse_message(payload)
+
+
+def test_malformed_json_body_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not valid JSON"):
+        parse_message("{not json")
+
+
+def test_non_object_body_is_rejected() -> None:
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        parse_message(json.dumps([1, 2, 3]))
+
+
+def test_non_finite_feature_is_rejected() -> None:
+    payload = load_test_event("high_risk_event.json")
+    payload["features"]["api_risk_score"] = float("nan")
+
+    with pytest.raises(ValueError, match="finite"):
+        parse_message(payload)
+
+
+def test_invalid_source_ip_is_rejected() -> None:
+    payload = load_test_event("high_risk_event.json")
+    payload["event"]["source_ip"] = "not-an-ip"
+
+    with pytest.raises(ValueError, match="valid IP address"):
+        parse_message(payload)
 
 
 def test_model_never_receives_identity() -> None:

@@ -54,8 +54,25 @@ investigator needs them later. Identity is written to DynamoDB as **top-level
 attributes**, which is what lets the agent correlate incidents and what a future
 GSI would key off.
 
-A bare feature vector is rejected with an actionable error. Extra CloudTrail
-context in `event` is preserved under `event_context` rather than dropped.
+The contract lives in [`src/threat_ml/contracts.py`](src/threat_ml/contracts.py)
+(`EventContext`, `ScoringMessage`) and is validated on the raw SQS body before
+anything downstream sees it, so a malformed message becomes a batch item failure
+and lands in the DLQ. Producers should build messages with
+`contracts.build_message()` rather than assembling a dict by hand.
+
+Validation rules:
+
+- unknown top-level keys are rejected — a typo like `featurez` fails loudly
+- `features` must be non-empty and finite; NaN/inf never reach the model
+- `source_ip` must parse as an IP address when present
+- individual identity fields are **optional** (real CloudTrail records vary),
+  but at least one of `principal_id`, `source_ip`, `event_name`, `service`,
+  `region` is required — an event with none of them yields an incident that can
+  never be correlated
+- absent fields are omitted from storage, never written as null, so a scan
+  cannot match two incidents on a shared missing value
+- a bare feature vector is refused with an actionable error
+- extra CloudTrail context in `event` is preserved under `event_context`
 
 ## How scoring works
 

@@ -18,6 +18,7 @@ from aws_lambda_powertools.metrics import MetricUnit
 from pydantic import ValidationError
 from sklearn.ensemble import IsolationForest
 
+from threat_ml.contracts import ScoringMessage
 from threat_ml.predict_event import (
     calculate_rule_score,
     convert_decision_to_anomaly_score,
@@ -25,7 +26,6 @@ from threat_ml.predict_event import (
     is_anomalous,
     read_anomaly_threshold,
 )
-from threat_ml.schemas import ScoringEnvelope
 
 # Metadata fields promoted to top-level DynamoDB attributes; anything else the
 # producer supplies is preserved under event_context.
@@ -138,26 +138,37 @@ def prepare_features(
     return pd.DataFrame([prepared], columns=list(feature_columns))
 
 
-def parse_envelope(message: dict[str, Any]) -> ScoringEnvelope:
-    """Validate one scoring message against the canonical contract.
+def parse_message(body: str | dict[str, Any]) -> ScoringMessage:
+    """Validate one queue message against the contract, before anything else.
 
-    The naked feature vector used previously is rejected with an actionable
-    error rather than quietly scored: accepting it would keep producing
-    incidents that carry no identity and therefore cannot be correlated. The
-    incidents table was empty when this contract landed, so there is no legacy
-    data to accommodate.
+    Called on the raw SQS body so a malformed message is rejected at the
+    boundary and routed to the DLQ, rather than being partially processed. The
+    bare feature vector used by the previous contract is refused with an
+    actionable error: accepting it would keep producing incidents that carry no
+    identity and therefore can never be correlated.
     """
+    if isinstance(body, str):
+        try:
+            message = json.loads(body)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Message body is not valid JSON: {error}") from error
+    else:
+        message = body
+
+    if not isinstance(message, dict):
+        raise ValueError(f"Message body must be a JSON object, got {type(message).__name__}.")
+
     try:
-        return ScoringEnvelope.model_validate(message)
+        return ScoringMessage.model_validate(message)
     except ValidationError as error:
         if "event" not in message and "features" not in message:
             raise ValueError(
-                "Message is not a scoring envelope. Expected "
+                "Message is not a scoring message. Expected "
                 '{"schema_version", "event", "features"}; received a bare '
                 f"feature vector with keys {sorted(message)[:6]}. Producers must "
-                "send identity metadata under 'event' so incidents can be correlated."
+                "send identity under 'event' so incidents can be correlated."
             ) from error
-        raise ValueError(f"Invalid scoring envelope: {error}") from error
+        raise ValueError(f"Invalid scoring message: {error}") from error
 
 
 def score_features(features: dict[str, float]) -> dict[str, Any]:
@@ -211,29 +222,23 @@ def _to_dynamo_number(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
-def build_incident(envelope: ScoringEnvelope, prediction: dict[str, Any]) -> dict[str, Any]:
-    """Assemble the stored incident from the envelope and the score.
+def build_incident(message: ScoringMessage, prediction: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the stored incident from the message and the score.
 
     Identity is written as **top-level attributes**, not buried in a serialised
     blob. That is what lets the agent correlate incidents, and what a global
     secondary index on principal_id or source_ip would key off later.
     """
-    event = envelope.event
+    event = message.event
     extra = event.model_dump(mode="json", exclude=set(EVENT_CORE_FIELDS))
 
     item: dict[str, Any] = {
         "incident_id": str(uuid.uuid4()),
-        "schema_version": envelope.schema_version,
+        "schema_version": message.schema_version,
         # When the incident was scored, distinct from when the event occurred.
         "timestamp": datetime.now(UTC).isoformat(),
         "event_time": event.timestamp.isoformat(),
-        # --- correlation dimensions ---
         "event_id": event.event_id,
-        "principal_id": event.principal_id,
-        "source_ip": str(event.source_ip),
-        "event_name": event.event_name,
-        "service": event.service,
-        "region": event.region,
         # --- scoring outcome ---
         "risk_level": prediction["risk_level"],
         "final_risk_score": _to_dynamo_number(prediction["final_risk_score"]),
@@ -243,8 +248,13 @@ def build_incident(envelope: ScoringEnvelope, prediction: dict[str, Any]) -> dic
         "model_version": prediction["model_version"],
         "reasons": prediction["reasons"],
         # The exact vector that produced the score, kept for explainability.
-        "features": {k: _to_dynamo_number(v) for k, v in envelope.features.items()},
+        "features": {k: _to_dynamo_number(v) for k, v in message.features.items()},
     }
+
+    # Only populated identity fields are written. Absent ones are omitted rather
+    # than stored as null, so a correlation scan never matches two incidents on
+    # the shared absence of a field.
+    item.update(event.correlation_dimensions())
 
     if extra:
         # Any additional CloudTrail context the producer supplied.
@@ -284,27 +294,25 @@ def process_sqs_event(event: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
             if not isinstance(body, str):
                 raise ValueError("SQS record body must be a JSON string.")
 
-            payload = json.loads(body)
-            if not isinstance(payload, dict):
-                raise ValueError("SQS body must contain one JSON object.")
-
-            envelope = parse_envelope(payload)
-            result = score_features(envelope.features)
+            # Validated at the boundary: nothing downstream sees an unvalidated
+            # message, and a malformed one becomes a batch item failure -> DLQ.
+            message = parse_message(body)
+            result = score_features(message.numeric_features())
 
             LOGGER.info(
                 json.dumps(
                     {
                         "message_id": message_id,
-                        "event_id": envelope.event.event_id,
-                        "principal_id": envelope.event.principal_id,
-                        "event_name": envelope.event.event_name,
+                        "event_id": message.event.event_id,
+                        "principal_id": message.event.principal_id,
+                        "event_name": message.event.event_name,
                         "prediction": result,
                     }
                 )
             )
 
             # Step 1: Save every prediction to DynamoDB
-            save_to_dynamodb(build_incident(envelope, result))
+            save_to_dynamodb(build_incident(message, result))
 
             METRICS.add_metric(
                 name="EventsProcessed",
@@ -323,7 +331,7 @@ def process_sqs_event(event: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
 
                 try:
                     publish_high_risk_alert(
-                        event=envelope.event.model_dump(mode="json"),
+                        event=message.event.model_dump(mode="json"),
                         prediction=result,
                     )
                 except Exception as sns_err:
@@ -374,14 +382,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # Direct synchronous calls go through the same contract, scoring, storage
     # and alerting as the SQS path, so both produce identical incidents.
-    envelope = parse_envelope(event)
-    result = score_features(envelope.features)
-    save_to_dynamodb(build_incident(envelope, result))
+    message = parse_message(event)
+    result = score_features(message.numeric_features())
+    save_to_dynamodb(build_incident(message, result))
 
     if result.get("risk_level") == "HIGH":
         try:
             publish_high_risk_alert(
-                event=envelope.event.model_dump(mode="json"),
+                event=message.event.model_dump(mode="json"),
                 prediction=result,
             )
         except Exception as sns_error:
@@ -389,6 +397,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     return {
         "request_id": request_id,
-        "event_id": envelope.event.event_id,
+        "event_id": message.event.event_id,
         "prediction": result,
     }
