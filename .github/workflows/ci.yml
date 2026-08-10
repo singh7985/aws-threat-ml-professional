@@ -37,10 +37,20 @@ jobs:
         run: ruff check .
 
       - name: mypy
-        run: mypy src infrastructure
+        run: mypy src infrastructure agent
 
       - name: Tests
+        # Fails the build if coverage drops below the fail_under gate in pyproject.toml.
         run: pytest --cov=threat_ml --cov-report=term-missing
+
+      - name: Bandit (static security analysis)
+        run: bandit -c pyproject.toml -r src services infrastructure mlops agent
+
+      - name: pip-audit (dependency vulnerabilities)
+        # Exits non-zero when any installed dependency has a known advisory.
+        # --skip-editable omits the local project, which is not on PyPI and
+        # therefore cannot be audited; every third-party package is still checked.
+        run: pip-audit --skip-editable
 
       - name: CDK synth
         run: npx cdk synth

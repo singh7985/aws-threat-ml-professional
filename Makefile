@@ -24,14 +24,15 @@ lint:
 	ruff check .
 
 type:
-	mypy src infrastructure
+	mypy src infrastructure agent
 
 test:
 	pytest --cov=threat_ml --cov-report=term-missing
 
+# Kept identical to the CI job so a local pass means a CI pass.
 security:
-	bandit -c pyproject.toml -r src services infrastructure
-	pip-audit
+	bandit -c pyproject.toml -r src services infrastructure mlops agent
+	pip-audit --skip-editable
 
 check: lint type test security
 
