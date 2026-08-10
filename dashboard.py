@@ -50,7 +50,7 @@ predictions_df, summary, metrics = data_tuple
 
 if page == "Overview":
     st.header("Security Event Overview")
-    with st.expander("ℹ️ About This Project (Click to Expand)", expanded=True):
+    with st.expander("ℹ️ About This Project (Click to Expand)", expanded=True):  # noqa: RUF001
         st.markdown("""
         **What is this?**
         This dashboard serves as the front-end for a serverless, AI-powered AWS Cloud Security platform. It processes AWS CloudTrail activity logs and detects potential hacker activity in real-time.

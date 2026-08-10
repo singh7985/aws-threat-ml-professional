@@ -1,5 +1,6 @@
 .venv/
 .venv-*/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -17,6 +18,14 @@ htmlcov/
 cdk.out/
 node_modules/
 npm-debug.log*
+
+# Logs and local scratch
+*.log
+logs/
+tmp/
+*.tmp
+*.bak
+*.orig
 data/raw/*
 data/processed/*
 models/*.joblib
@@ -28,3 +37,10 @@ models/*.pkl
 Thumbs.db
 .idea/
 .vscode/*.local.json
+
+# Generated prediction artifacts -- reproducible via `python -m threat_ml.batch_predict`
+outputs/
+
+# Installers and other large binaries must not live in the repository
+*.pkg
+*.dmg

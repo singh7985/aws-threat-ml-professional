@@ -19,6 +19,9 @@ COPY src/threat_ml \
 COPY services/scorer/handler.py \
     ${LAMBDA_TASK_ROOT}/handler.py
 
+COPY services/scorer/notifier.py \
+    ${LAMBDA_TASK_ROOT}/notifier.py
+
 COPY models/model.joblib \
     ${LAMBDA_TASK_ROOT}/model/model.joblib
 

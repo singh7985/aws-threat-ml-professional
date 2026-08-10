@@ -71,7 +71,9 @@ def generate_events(*, output: Path, normal: int, suspicious: int, seed: int = 4
     if normal < 0 or suspicious < 0:
         raise ValueError("Event counts must be non-negative")
 
-    rng = random.Random(seed)
+    # A seeded, reproducible generator is the point: this produces synthetic
+    # training events, never keys, tokens or anything security-bearing.
+    rng = random.Random(seed)  # nosec B311
     events = [build_event(suspicious=False, index=i, rng=rng) for i in range(normal)]
     events.extend(build_event(suspicious=True, index=i, rng=rng) for i in range(suspicious))
     rng.shuffle(events)
