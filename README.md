@@ -22,6 +22,41 @@ SQS ──► Lambda (container)  ──► DynamoDB incidents
 | Deterministic investigation agent | `agent/` |
 | Streamlit dashboard | `dashboard.py` |
 
+## The scoring contract
+
+Every message on the queue is a **scoring envelope** (`schema_version` 1.0):
+
+```json
+{
+  "schema_version": "1.0",
+  "event": {
+    "event_id": "evt-123",
+    "timestamp": "2026-08-10T03:15:00Z",
+    "principal_id": "developer-04",
+    "source_ip": "203.0.113.77",
+    "event_name": "CreateAccessKey",
+    "service": "iam",
+    "region": "eu-west-1"
+  },
+  "features": { "hour_of_day": 3, "unusual_hour": 1, "...": 0 }
+}
+```
+
+The split is the point:
+
+| | |
+|---|---|
+| `event` | who / what / where / when — **never scored**, always preserved |
+| `features` | the numeric vector the model consumes |
+
+The model never receives `principal_id` or `source_ip` merely because the
+investigator needs them later. Identity is written to DynamoDB as **top-level
+attributes**, which is what lets the agent correlate incidents and what a future
+GSI would key off.
+
+A bare feature vector is rejected with an actionable error. Extra CloudTrail
+context in `event` is preserved under `event_context` rather than dropped.
+
 ## How scoring works
 
 Each event is reduced to 12 numeric features (`hour_of_day`, `unusual_hour`,

@@ -1,4 +1,15 @@
 {
+  "schema_version": "1.0",
+  "event": {
+    "event_id": "evt-high-0001",
+    "timestamp": "2026-08-10T03:15:00Z",
+    "principal_id": "developer-04",
+    "source_ip": "203.0.113.77",
+    "event_name": "CreateAccessKey",
+    "service": "iam",
+    "region": "eu-west-1"
+  },
+  "features": {
     "hour_of_day": 3,
     "is_weekend": 0,
     "failed_call": 1,
@@ -11,4 +22,5 @@
     "unique_services_last_1h": 7,
     "iam_calls_last_1h": 6,
     "api_risk_score": 0.98
+  }
 }

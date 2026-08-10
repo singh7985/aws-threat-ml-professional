@@ -1,1 +1,8 @@
-{"Records": [{"messageId": "message-bad-001", "body": "{\"unknown_feature\": 10}"}]}
+{
+  "Records": [
+    {
+      "messageId": "message-bad-001",
+      "body": "{\"unknown_feature\": 10}"
+    }
+  ]
+}

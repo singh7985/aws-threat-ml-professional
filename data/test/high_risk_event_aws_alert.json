@@ -1,20 +1,26 @@
 {
-  "hour_of_day": 3,
-  "is_weekend": 0,
-  "failed_call": 1,
-  "sensitive_operation": 1,
-  "unusual_hour": 1,
-  "external_ip": 1,
-  "outside_home_region": 1,
-  "calls_last_5m": 12,
-  "failed_calls_last_5m": 5,
-  "unique_services_last_1h": 7,
-  "iam_calls_last_1h": 6,
-  "api_risk_score": 0.98,
-  "event_id": "evt-40bb3d3b-ecd3-40b6-9d61-0f124e9a5554",
-  "timestamp": "2026-08-05T20:07:36.498852Z",
-  "principal_id": "developer-alert-test",
-  "event_name": "CreateAccessKey",
-  "service": "iam",
-  "region": "us-west-2"
+  "schema_version": "1.0",
+  "event": {
+    "event_id": "evt-40bb3d3b-ecd3-40b6-9d61-0f124e9a5554",
+    "timestamp": "2026-08-05T20:07:36.498852Z",
+    "principal_id": "developer-alert-test",
+    "event_name": "CreateAccessKey",
+    "service": "iam",
+    "region": "us-west-2",
+    "source_ip": "203.0.113.77"
+  },
+  "features": {
+    "hour_of_day": 3,
+    "is_weekend": 0,
+    "failed_call": 1,
+    "sensitive_operation": 1,
+    "unusual_hour": 1,
+    "external_ip": 1,
+    "outside_home_region": 1,
+    "calls_last_5m": 12,
+    "failed_calls_last_5m": 5,
+    "unique_services_last_1h": 7,
+    "iam_calls_last_1h": 6,
+    "api_risk_score": 0.98
+  }
 }

@@ -20,27 +20,35 @@ def _get_sns_client() -> Any:
 
 
 def publish_high_risk_alert(
-    payload: dict[str, Any],
+    event: dict[str, Any],
     prediction: dict[str, Any],
 ) -> None:
-    """Publish one high-risk incident to Amazon SNS."""
+    """Publish one high-risk incident to Amazon SNS.
+
+    Takes the envelope's event metadata, not the feature vector. Reading
+    identity off a feature vector meant every alert said "unknown" for
+    principal, event name, service and Region -- the four things a responder
+    needs first.
+    """
 
     topic_arn = os.getenv("ALERTS_TOPIC_ARN")
 
     if not topic_arn:
         raise RuntimeError("ALERTS_TOPIC_ARN is not configured.")
 
-    incident_id = str(payload.get("event_id", "unknown-event"))
+    incident_id = str(event.get("event_id", "unknown-event"))
 
     message = {
         "incident_id": incident_id,
         "risk_level": prediction["risk_level"],
         "final_risk_score": prediction["final_risk_score"],
         "model_prediction": prediction["model_prediction"],
-        "principal_id": payload.get("principal_id", "unknown"),
-        "event_name": payload.get("event_name", "unknown"),
-        "service": payload.get("service", "unknown"),
-        "region": payload.get("region", "unknown"),
+        "principal_id": event.get("principal_id", "unknown"),
+        "source_ip": event.get("source_ip", "unknown"),
+        "event_name": event.get("event_name", "unknown"),
+        "service": event.get("service", "unknown"),
+        "region": event.get("region", "unknown"),
+        "event_time": event.get("timestamp", "unknown"),
         "reasons": prediction.get("reasons", []),
     }
 

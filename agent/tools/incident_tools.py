@@ -232,7 +232,13 @@ def _payload(incident: dict[str, Any]) -> dict[str, Any]:
     The scorer persists what it analysed under ``original_payload`` as a JSON
     string. Older or hand-written rows may store it as a dict, or omit it.
     """
-    raw = incident.get("original_payload") or incident.get("payload")
+    # "features" is the current contract; the older keys are still read so a
+    # hand-written or externally produced row is not silently ignored.
+    raw = (
+        incident.get("features")
+        or incident.get("original_payload")
+        or incident.get("payload")
+    )
 
     if isinstance(raw, dict):
         decoded: dict[str, Any] = _decode(raw)

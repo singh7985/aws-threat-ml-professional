@@ -1,14 +1,26 @@
 {
-  "hour_of_day": 14.0,
-  "is_weekend": 0.0,
-  "failed_call": 0.0,
-  "sensitive_operation": 1.0,
-  "unusual_hour": 0.0,
-  "external_ip": 1.0,
-  "outside_home_region": 0.0,
-  "calls_last_5m": 2.0,
-  "failed_calls_last_5m": 0.0,
-  "unique_services_last_1h": 1.0,
-  "iam_calls_last_1h": 3.0,
-  "api_risk_score": 10.0
+  "schema_version": "1.0",
+  "event": {
+    "event_id": "evt-sample-0001",
+    "timestamp": "2026-08-10T09:00:00Z",
+    "principal_id": "developer-01",
+    "source_ip": "198.51.100.10",
+    "event_name": "ListBuckets",
+    "service": "s3",
+    "region": "us-east-1"
+  },
+  "features": {
+    "hour_of_day": 14.0,
+    "is_weekend": 0.0,
+    "failed_call": 0.0,
+    "sensitive_operation": 1.0,
+    "unusual_hour": 0.0,
+    "external_ip": 1.0,
+    "outside_home_region": 0.0,
+    "calls_last_5m": 2.0,
+    "failed_calls_last_5m": 0.0,
+    "unique_services_last_1h": 1.0,
+    "iam_calls_last_1h": 3.0,
+    "api_risk_score": 10.0
+  }
 }

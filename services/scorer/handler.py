@@ -15,6 +15,7 @@ import joblib
 import pandas as pd
 from aws_lambda_powertools import Logger, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
+from pydantic import ValidationError
 from sklearn.ensemble import IsolationForest
 
 from threat_ml.predict_event import (
@@ -23,6 +24,19 @@ from threat_ml.predict_event import (
     determine_risk_level,
     is_anomalous,
     read_anomaly_threshold,
+)
+from threat_ml.schemas import ScoringEnvelope
+
+# Metadata fields promoted to top-level DynamoDB attributes; anything else the
+# producer supplies is preserved under event_context.
+EVENT_CORE_FIELDS = (
+    "event_id",
+    "timestamp",
+    "principal_id",
+    "source_ip",
+    "event_name",
+    "service",
+    "region",
 )
 
 try:
@@ -124,19 +138,42 @@ def prepare_features(
     return pd.DataFrame([prepared], columns=list(feature_columns))
 
 
-def score_event(payload: dict[str, Any]) -> dict[str, Any]:
+def parse_envelope(message: dict[str, Any]) -> ScoringEnvelope:
+    """Validate one scoring message against the canonical contract.
+
+    The naked feature vector used previously is rejected with an actionable
+    error rather than quietly scored: accepting it would keep producing
+    incidents that carry no identity and therefore cannot be correlated. The
+    incidents table was empty when this contract landed, so there is no legacy
+    data to accommodate.
+    """
+    try:
+        return ScoringEnvelope.model_validate(message)
+    except ValidationError as error:
+        if "event" not in message and "features" not in message:
+            raise ValueError(
+                "Message is not a scoring envelope. Expected "
+                '{"schema_version", "event", "features"}; received a bare '
+                f"feature vector with keys {sorted(message)[:6]}. Producers must "
+                "send identity metadata under 'event' so incidents can be correlated."
+            ) from error
+        raise ValueError(f"Invalid scoring envelope: {error}") from error
+
+
+def score_features(features: dict[str, float]) -> dict[str, Any]:
+    """Score one numeric feature vector. Identity never reaches this function."""
     model, feature_columns, manifest = load_artifacts()
-    feature_frame = prepare_features(payload=payload, feature_columns=feature_columns)
+    feature_frame = prepare_features(payload=features, feature_columns=feature_columns)
 
     # The calibrated cutoff travels with the model in feature_manifest.json, so
-    # serving uses the same boundary the model was evaluated against. Older
-    # manifests without the key fall back to the previous behaviour.
+    # serving uses the same boundary the model was evaluated against. A manifest
+    # without it raises rather than silently scoring uncalibrated.
     anomaly_threshold = read_anomaly_threshold(manifest)
 
     decision_value = float(model.decision_function(feature_frame)[0])
     model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
     anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
-    rule_score, reasons = calculate_rule_score(payload)
+    rule_score, reasons = calculate_rule_score(features)
 
     final_risk_score = min(1.0, 0.70 * anomaly_score + 0.30 * rule_score)
     risk_level = determine_risk_level(final_risk_score)
@@ -169,7 +206,54 @@ def score_event(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def save_to_dynamodb(prediction: dict[str, Any], payload: dict[str, Any]) -> None:
+def _to_dynamo_number(value: Any) -> Decimal:
+    """DynamoDB rejects float; Decimal(str(x)) avoids binary-float artefacts."""
+    return Decimal(str(value))
+
+
+def build_incident(envelope: ScoringEnvelope, prediction: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the stored incident from the envelope and the score.
+
+    Identity is written as **top-level attributes**, not buried in a serialised
+    blob. That is what lets the agent correlate incidents, and what a global
+    secondary index on principal_id or source_ip would key off later.
+    """
+    event = envelope.event
+    extra = event.model_dump(mode="json", exclude=set(EVENT_CORE_FIELDS))
+
+    item: dict[str, Any] = {
+        "incident_id": str(uuid.uuid4()),
+        "schema_version": envelope.schema_version,
+        # When the incident was scored, distinct from when the event occurred.
+        "timestamp": datetime.now(UTC).isoformat(),
+        "event_time": event.timestamp.isoformat(),
+        # --- correlation dimensions ---
+        "event_id": event.event_id,
+        "principal_id": event.principal_id,
+        "source_ip": str(event.source_ip),
+        "event_name": event.event_name,
+        "service": event.service,
+        "region": event.region,
+        # --- scoring outcome ---
+        "risk_level": prediction["risk_level"],
+        "final_risk_score": _to_dynamo_number(prediction["final_risk_score"]),
+        "anomaly_score": _to_dynamo_number(prediction["anomaly_score"]),
+        "rule_score": _to_dynamo_number(prediction["rule_score"]),
+        "model_flagged_anomaly": prediction["model_flagged_anomaly"],
+        "model_version": prediction["model_version"],
+        "reasons": prediction["reasons"],
+        # The exact vector that produced the score, kept for explainability.
+        "features": {k: _to_dynamo_number(v) for k, v in envelope.features.items()},
+    }
+
+    if extra:
+        # Any additional CloudTrail context the producer supplied.
+        item["event_context"] = json.loads(json.dumps(extra), parse_float=Decimal)
+
+    return item
+
+
+def save_to_dynamodb(item: dict[str, Any]) -> None:
     global _dynamodb
     if not INCIDENTS_TABLE:
         LOGGER.warning("INCIDENTS_TABLE_NAME not set; skipping database save.")
@@ -178,19 +262,6 @@ def save_to_dynamodb(prediction: dict[str, Any], payload: dict[str, Any]) -> Non
         _dynamodb = boto3.resource("dynamodb")
 
     table = _dynamodb.Table(INCIDENTS_TABLE)
-    now = datetime.now(UTC).isoformat()
-
-    item = {
-        "incident_id": str(uuid.uuid4()),
-        "timestamp": now,
-        "risk_level": prediction["risk_level"],
-        "final_risk_score": Decimal(str(prediction["final_risk_score"])),
-        "anomaly_score": Decimal(str(prediction["anomaly_score"])),
-        "rule_score": Decimal(str(prediction["rule_score"])),
-        "reasons": prediction["reasons"],
-        # Save a serialized version of what we analyzed
-        "original_payload": json.dumps(payload),
-    }
 
     try:
         table.put_item(
@@ -217,12 +288,23 @@ def process_sqs_event(event: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
             if not isinstance(payload, dict):
                 raise ValueError("SQS body must contain one JSON object.")
 
-            result = score_event(payload)
+            envelope = parse_envelope(payload)
+            result = score_features(envelope.features)
 
-            LOGGER.info(json.dumps({"message_id": message_id, "prediction": result}))
+            LOGGER.info(
+                json.dumps(
+                    {
+                        "message_id": message_id,
+                        "event_id": envelope.event.event_id,
+                        "principal_id": envelope.event.principal_id,
+                        "event_name": envelope.event.event_name,
+                        "prediction": result,
+                    }
+                )
+            )
 
             # Step 1: Save every prediction to DynamoDB
-            save_to_dynamodb(result, payload)
+            save_to_dynamodb(build_incident(envelope, result))
 
             METRICS.add_metric(
                 name="EventsProcessed",
@@ -241,7 +323,7 @@ def process_sqs_event(event: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
 
                 try:
                     publish_high_risk_alert(
-                        payload=payload,
+                        event=envelope.event.model_dump(mode="json"),
                         prediction=result,
                     )
                 except Exception as sns_err:
@@ -290,14 +372,23 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if isinstance(event.get("Records"), list):
         return process_sqs_event(event)
 
-    # For direct synchronous calls, we still score, save, and alert. Uses the
-    # same publisher as the SQS path so both produce identical alerts.
-    result = score_event(event)
-    save_to_dynamodb(result, event)
+    # Direct synchronous calls go through the same contract, scoring, storage
+    # and alerting as the SQS path, so both produce identical incidents.
+    envelope = parse_envelope(event)
+    result = score_features(envelope.features)
+    save_to_dynamodb(build_incident(envelope, result))
+
     if result.get("risk_level") == "HIGH":
         try:
-            publish_high_risk_alert(payload=event, prediction=result)
+            publish_high_risk_alert(
+                event=envelope.event.model_dump(mode="json"),
+                prediction=result,
+            )
         except Exception as sns_error:
             LOGGER.error(f"Failed to publish SNS alert: {sns_error}")
 
-    return {"request_id": request_id, "prediction": result}
+    return {
+        "request_id": request_id,
+        "event_id": envelope.event.event_id,
+        "prediction": result,
+    }

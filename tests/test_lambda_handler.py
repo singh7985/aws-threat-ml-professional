@@ -8,6 +8,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+import pytest
 from sklearn.ensemble import IsolationForest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -72,15 +73,22 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ["MODEL_DIRECTORY"] = _build_model_fixture()
 
 from services.scorer.handler import (  # noqa: E402
+    build_incident,
     lambda_handler,
-    score_event,
+    parse_envelope,
+    score_features,
 )
 
 
 def load_test_event(name: str) -> dict[str, Any]:
+    """Load one scoring envelope fixture."""
     path = PROJECT_ROOT / "data" / "test" / name
 
     return dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def load_features(name: str) -> dict[str, float]:
+    return dict(load_test_event(name)["features"])
 
 
 class MockContext:
@@ -101,11 +109,51 @@ def test_lambda_health_check() -> None:
 
 
 def test_high_risk_scores_above_normal() -> None:
-    high_risk = score_event(load_test_event("high_risk_event.json"))
+    high_risk = score_features(load_features("high_risk_event.json"))
 
-    normal = score_event(load_test_event("normal_event.json"))
+    normal = score_features(load_features("normal_event.json"))
 
     assert high_risk["final_risk_score"] > normal["final_risk_score"]
+
+
+def test_envelope_metadata_reaches_the_stored_incident() -> None:
+    """The whole point of the contract: identity survives into DynamoDB."""
+    envelope = parse_envelope(load_test_event("high_risk_event.json"))
+    incident = build_incident(envelope, score_features(envelope.features))
+
+    assert incident["principal_id"] == "developer-04"
+    assert incident["source_ip"] == "203.0.113.77"
+    assert incident["event_name"] == "CreateAccessKey"
+    assert incident["service"] == "iam"
+    assert incident["region"] == "eu-west-1"
+    assert incident["event_id"] == "evt-high-0001"
+    assert incident["schema_version"] == "1.0"
+    # Scoring outcome and the exact vector that produced it.
+    assert incident["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
+    assert set(incident["features"]) == set(envelope.features)
+
+
+def test_naked_feature_vector_is_rejected_with_guidance() -> None:
+    """The old contract must fail loudly, not score without identity."""
+    with pytest.raises(ValueError, match="not a scoring envelope"):
+        parse_envelope(load_features("high_risk_event.json"))
+
+
+def test_envelope_requires_identity_fields() -> None:
+    payload = load_test_event("high_risk_event.json")
+    del payload["event"]["principal_id"]
+
+    with pytest.raises(ValueError, match="Invalid scoring envelope"):
+        parse_envelope(payload)
+
+
+def test_model_never_receives_identity() -> None:
+    """score_features must work from features alone."""
+    features = load_features("high_risk_event.json")
+    assert not {"principal_id", "source_ip", "event_name"} & set(features)
+
+    result = score_features(features)
+    assert 0.0 <= result["final_risk_score"] <= 1.0
 
 
 def test_sqs_success_returns_no_failures() -> None:

@@ -1,4 +1,15 @@
 {
+  "schema_version": "1.0",
+  "event": {
+    "event_id": "evt-normal-0001",
+    "timestamp": "2026-08-10T11:00:00Z",
+    "principal_id": "developer-08",
+    "source_ip": "198.51.100.22",
+    "event_name": "GetMetricData",
+    "service": "cloudwatch",
+    "region": "us-east-1"
+  },
+  "features": {
     "hour_of_day": 11,
     "is_weekend": 0,
     "failed_call": 0,
@@ -11,4 +22,5 @@
     "unique_services_last_1h": 2,
     "iam_calls_last_1h": 0,
     "api_risk_score": 0.1
+  }
 }
