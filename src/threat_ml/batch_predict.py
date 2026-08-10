@@ -19,6 +19,8 @@ from threat_ml.predict_event import (
     calculate_rule_score,
     convert_decision_to_anomaly_score,
     determine_risk_level,
+    is_anomalous,
+    read_anomaly_threshold,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -48,26 +50,30 @@ def load_model() -> IsolationForest:
     return model
 
 
-def load_feature_columns() -> list[str]:
-    """Load the feature order used during training."""
+def load_manifest() -> dict[str, Any]:
+    """Load the feature manifest written at training time."""
 
     if not FEATURE_MANIFEST_PATH.exists():
         raise FileNotFoundError(
             "feature_manifest.json was not found. Run the model training program first."
         )
 
-    manifest = json.loads(
+    manifest: dict[str, Any] = json.loads(
         FEATURE_MANIFEST_PATH.read_text(
             encoding="utf-8",
         )
     )
 
-    feature_columns = manifest.get("feature_columns")
-
-    if not isinstance(feature_columns, list):
+    if not isinstance(manifest.get("feature_columns"), list):
         raise ValueError("The feature manifest does not contain a valid feature_columns list.")
 
-    return [str(column) for column in feature_columns]
+    return manifest
+
+
+def load_feature_columns() -> list[str]:
+    """Load the feature order used during training."""
+
+    return [str(column) for column in load_manifest()["feature_columns"]]
 
 
 def load_dataset(path: Path) -> pd.DataFrame:
@@ -118,15 +124,18 @@ def score_dataset(
     model: IsolationForest,
     dataset: pd.DataFrame,
     feature_columns: list[str],
+    anomaly_threshold: float,
 ) -> pd.DataFrame:
-    """Run ML and rule-based scoring for every row."""
+    """Run ML and rule-based scoring for every row.
+
+    Scored against the calibrated cutoff so batch results match what the CLI and
+    the Lambda produce for the same rows.
+    """
 
     feature_matrix = prepare_feature_matrix(
         dataset=dataset,
         feature_columns=feature_columns,
     )
-
-    model_predictions = model.predict(feature_matrix)
 
     decision_values = model.decision_function(feature_matrix)
 
@@ -135,11 +144,11 @@ def score_dataset(
     for position, (_, row) in enumerate(dataset.iterrows()):
         payload = {feature: float(row[feature]) for feature in feature_columns}
 
-        model_prediction = int(model_predictions[position])
-
         decision_value = float(decision_values[position])
 
-        anomaly_score = convert_decision_to_anomaly_score(decision_value)
+        model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
+
+        anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
 
         rule_score, reasons = calculate_rule_score(payload)
 
@@ -176,8 +185,8 @@ def score_dataset(
 
         output_row.update(
             {
-                "model_prediction": ("suspicious" if model_prediction == -1 else "normal"),
-                "model_flagged_anomaly": (model_prediction == -1),
+                "model_prediction": ("suspicious" if model_flagged_anomaly else "normal"),
+                "model_flagged_anomaly": model_flagged_anomaly,
                 "model_decision_value": round(
                     decision_value,
                     6,
@@ -380,7 +389,10 @@ def main() -> None:
     model = load_model()
 
     print("Loading feature manifest...")
-    feature_columns = load_feature_columns()
+    manifest = load_manifest()
+    feature_columns = [str(column) for column in manifest["feature_columns"]]
+    anomaly_threshold = read_anomaly_threshold(manifest)
+    print(f"Anomaly threshold: {anomaly_threshold:.6f}")
 
     print(f"Loading dataset: {arguments.input}")
     dataset = load_dataset(arguments.input)
@@ -396,6 +408,7 @@ def main() -> None:
         model=model,
         dataset=dataset,
         feature_columns=feature_columns,
+        anomaly_threshold=anomaly_threshold,
     )
 
     summary = build_summary(predictions)

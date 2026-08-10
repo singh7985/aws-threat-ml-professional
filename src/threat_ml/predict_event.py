@@ -15,6 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "models" / "model.joblib"
 FEATURE_MANIFEST_PATH = PROJECT_ROOT / "models" / "feature_manifest.json"
 
+# Key the training step writes into feature_manifest.json. There is no default:
+# see read_anomaly_threshold for why a fallback is deliberately absent.
+ANOMALY_THRESHOLD_KEY = "anomaly_threshold"
+
 
 def load_json_file(path: Path) -> dict[str, Any]:
     """Load a JSON object from a file."""
@@ -50,6 +54,52 @@ def load_feature_manifest() -> list[str]:
         raise ValueError("feature_manifest.json does not contain a valid feature_columns list.")
 
     return [str(column) for column in feature_columns]
+
+
+def read_anomaly_threshold(manifest: dict[str, Any]) -> float:
+    """Read the calibrated cutoff from a feature manifest.
+
+    Raises if the value is absent or unusable. There is deliberately **no**
+    fallback to an uncalibrated default: a scorer that quietly reverted to the
+    contamination boundary would raise roughly five times as many false alerts
+    with nothing in the logs to explain why. Failing here makes the problem
+    immediate and visible -- in Lambda the message lands in the DLQ and the
+    alarm fires, instead of the system degrading in silence.
+    """
+
+    if ANOMALY_THRESHOLD_KEY not in manifest:
+        raise ValueError(
+            f"feature_manifest.json is missing '{ANOMALY_THRESHOLD_KEY}'. "
+            "The model artifact predates threshold calibration and must be "
+            "retrained with: python -m threat_ml.train_model"
+        )
+
+    value = manifest[ANOMALY_THRESHOLD_KEY]
+
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"'{ANOMALY_THRESHOLD_KEY}' must be numeric. Received: {value!r}"
+        ) from error
+
+    if not math.isfinite(threshold):
+        raise ValueError(f"'{ANOMALY_THRESHOLD_KEY}' must be finite. Received: {value!r}")
+
+    return threshold
+
+
+def load_anomaly_threshold() -> float:
+    """Load the calibrated cutoff from the on-disk feature manifest."""
+
+    if not FEATURE_MANIFEST_PATH.exists():
+        raise FileNotFoundError(
+            "Feature manifest was not found. Run the model-training program first."
+        )
+
+    manifest = json.loads(FEATURE_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    return read_anomaly_threshold(manifest)
 
 
 def load_model() -> IsolationForest:
@@ -95,21 +145,45 @@ def prepare_input(
 
 def convert_decision_to_anomaly_score(
     decision_value: float,
+    anomaly_threshold: float,
 ) -> float:
     """
     Convert the Isolation Forest decision value to 0-1.
 
     Lower model decision values represent more unusual events.
+
+    The curve is centred on ``anomaly_threshold`` -- the calibrated cutoff
+    chosen at training time, expressed in suspicion space (higher = more
+    suspicious, i.e. ``-decision_function``). Centring it there means a score of
+    exactly 0.5 is the decision boundary, so ``anomaly_score >= 0.5`` and "the
+    model flagged this" are the same statement.
+
+    The threshold is required rather than defaulted: an accidental call without
+    it would silently score against the uncalibrated boundary.
     """
 
     exponent = max(
         -60.0,
-        min(60.0, 6.0 * decision_value),
+        min(60.0, 6.0 * (decision_value + anomaly_threshold)),
     )
 
     score = 1.0 / (1.0 + math.exp(exponent))
 
     return float(score)
+
+
+def is_anomalous(
+    decision_value: float,
+    anomaly_threshold: float,
+) -> bool:
+    """Decide whether one decision value clears the calibrated cutoff.
+
+    Equivalent to ``-decision_value >= anomaly_threshold``. Used instead of
+    ``IsolationForest.predict()``, whose cutoff is fixed by the ``contamination``
+    parameter rather than by the observed score distribution.
+    """
+
+    return bool(-decision_value >= anomaly_threshold)
 
 
 def calculate_rule_score(
@@ -172,17 +246,20 @@ def predict_event(
 
     model = load_model()
     feature_columns = load_feature_manifest()
+    anomaly_threshold = load_anomaly_threshold()
 
     features = prepare_input(
         payload=payload,
         feature_columns=feature_columns,
     )
 
-    model_prediction = int(model.predict(features)[0])
-
     decision_value = float(model.decision_function(features)[0])
 
-    anomaly_score = convert_decision_to_anomaly_score(decision_value)
+    # The calibrated cutoff replaces IsolationForest.predict(), whose boundary is
+    # fixed by `contamination` rather than by the observed score distribution.
+    model_flagged_anomaly = is_anomalous(decision_value, anomaly_threshold)
+
+    anomaly_score = convert_decision_to_anomaly_score(decision_value, anomaly_threshold)
 
     rule_score, reasons = calculate_rule_score(payload)
 
@@ -191,16 +268,11 @@ def predict_event(
         0.70 * anomaly_score + 0.30 * rule_score,
     )
 
-    # Re-calibrate normal levels
-    if rule_score < 0.1:
-        # If rules are perfectly clean, force the ML scaling lower (it's safe)
-        final_risk_score = min(final_risk_score, 0.35)
-
     risk_level = determine_risk_level(final_risk_score)
 
-    model_label = "suspicious" if model_prediction == -1 else "normal"
+    model_label = "suspicious" if model_flagged_anomaly else "normal"
 
-    if model_prediction == -1:
+    if model_flagged_anomaly:
         reasons.insert(
             0,
             "The machine-learning model marked the behavior as unusual.",
@@ -211,7 +283,7 @@ def predict_event(
 
     return {
         "model_prediction": model_label,
-        "model_flagged_anomaly": (model_prediction == -1),
+        "model_flagged_anomaly": model_flagged_anomaly,
         "model_decision_value": round(
             decision_value,
             6,

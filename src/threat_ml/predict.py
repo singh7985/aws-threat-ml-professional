@@ -8,6 +8,13 @@ import joblib
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
+from threat_ml.predict_event import (
+    calculate_rule_score,
+    convert_decision_to_anomaly_score,
+    determine_risk_level,
+    is_anomalous,
+    read_anomaly_threshold,
+)
 from threat_ml.schemas import IncidentPrediction, SecurityEvent
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +33,8 @@ class ThreatPredictor:
         self.manifest: dict[str, Any] = json.loads(MANIFEST_PATH.read_text("utf-8"))
         self.feature_columns: list[str] = self.manifest["feature_columns"]
         self.model_version: str = self.manifest["model_version"]
+        # Same calibrated cutoff the CLI and the Lambda use.
+        self.anomaly_threshold: float = read_anomaly_threshold(self.manifest)
 
     def _extract_features(self, event: SecurityEvent) -> pd.DataFrame:
         """Converts raw AWS event JSON into ML numeric structure."""
@@ -65,46 +74,34 @@ class ThreatPredictor:
         # 2. Extract ML features
         features = self._extract_features(event)
 
-        # 3. Model outputs decision function (higher is more normal, negative is anomalous)
-        raw_score: float = self.model.decision_function(features)[0]
+        # 3. Score through the shared pipeline.
+        #
+        # This deliberately delegates to threat_ml.predict_event rather than
+        # implementing its own maths. When this class carried a private scoring
+        # formula it disagreed with both the CLI and the Lambda for the same
+        # event -- three different answers from one system.
+        decision_value = float(self.model.decision_function(features)[0])
 
-        # Convert IsolationForest [-0.5, 0.5] score into a standard [0.0 - 1.0] anomaly score
-        # (Where 1.0 means highly anomalous)
-        anomaly_score = float(max(0.0, min(1.0, 0.5 - raw_score)))
+        anomaly_score = convert_decision_to_anomaly_score(
+            decision_value,
+            self.anomaly_threshold,
+        )
 
-        # 4. Apply hardcoded Security Rules
-        reasons = []
-        risk_score = anomaly_score
+        payload = {column: float(features.iloc[0][column]) for column in self.feature_columns}
+        rule_score, reasons = calculate_rule_score(payload)
 
-        if anomaly_score > 0.6:
-            reasons.append(f"High ML Anomaly detected (Score: {anomaly_score:.2f})")
+        risk_score = min(1.0, 0.70 * anomaly_score + 0.30 * rule_score)
 
-        if not event.success and event.sensitive_operation:
-            reasons.append("Failed sensitive operation (e.g. Delete, Create, Modify IAM)")
-            risk_score += 0.3
+        if is_anomalous(decision_value, self.anomaly_threshold):
+            reasons.insert(0, "The machine-learning model marked the behavior as unusual.")
 
-        if event.region != "us-east-1" and event.sensitive_operation:
-            reasons.append(f"Sensitive Operation performed outside typical region ({event.region})")
-            risk_score += 0.2
+        if not reasons:
+            reasons.append("No major security-warning rules were triggered.")
 
-        if event.timestamp.hour < 5:
-            reasons.append(
-                f"Activity occurred during very early hours ({event.timestamp.hour} AM)."
-            )
-            risk_score += 0.1
+        # 4. Classify the final output
+        risk_level = determine_risk_level(risk_score)
 
-        # Cap Risk Score at 1.0
-        risk_score = min(1.0, risk_score)
-
-        # 5. Classify the final output
-        if risk_score >= 0.7:
-            risk_level = "HIGH"
-        elif risk_score >= 0.4:
-            risk_level = "MEDIUM"
-        else:
-            risk_level = "LOW"
-
-        # 6. Return the fully-validated Pydantic result object
+        # 5. Return the fully-validated Pydantic result object
         return IncidentPrediction(
             event_id=event.event_id,
             anomaly_score=anomaly_score,
