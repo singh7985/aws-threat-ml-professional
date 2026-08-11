@@ -28,7 +28,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -e ".[dev,infra]"
+          python -m pip install -e ".[dev,infra,mlops]"
 
       - name: Install Node dependencies
         run: npm install

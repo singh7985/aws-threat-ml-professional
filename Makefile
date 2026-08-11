@@ -12,7 +12,7 @@ help:
 
 setup:
 	python -m pip install --upgrade pip setuptools wheel
-	python -m pip install -e ".[dev,infra]"
+	python -m pip install -e ".[dev,infra,mlops]"
 	npm install
 	pre-commit install
 

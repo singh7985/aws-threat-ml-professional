@@ -48,6 +48,13 @@ infra = [
   "aws-cdk-lib>=2,<3",
   "constructs>=10,<11",
 ]
+# Needed to type-check and run mlops/. Without these installed, mypy resolves
+# the SageMaker SDK to Any and its pass over mlops/ is largely vacuous, which is
+# how a suppression that is required locally showed up as unused in CI.
+mlops = [
+  "sagemaker>=2.170,<3",
+  "moto>=5,<6",
+]
 
 [project.scripts]
 threat-ml = "threat_ml.cli:main"
