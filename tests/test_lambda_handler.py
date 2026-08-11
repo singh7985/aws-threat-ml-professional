@@ -62,22 +62,41 @@ def _build_model_fixture() -> str:
     return str(directory)
 
 
-# These must be set before the handler is imported: it resolves the model
-# directory and its configuration at module scope, and boto3 needs a region
-# before any client can be constructed.
+# boto3 needs a region before any client can be constructed.
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 os.environ.setdefault("AWS_SECURITY_TOKEN", "testing")
 os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-os.environ["MODEL_DIRECTORY"] = _build_model_fixture()
 
+from services.scorer import handler  # noqa: E402
 from services.scorer.handler import (  # noqa: E402
     build_incident,
     lambda_handler,
     parse_message,
     score_features,
 )
+
+_MODEL_FIXTURE = _build_model_fixture()
+
+
+@pytest.fixture(autouse=True)
+def _use_fixture_model(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Point the handler at the throwaway artifacts, whatever the import order.
+
+    Setting MODEL_DIRECTORY before importing the handler is not enough: the
+    handler resolves its paths once at module scope, and another test module
+    may import it first. Patching the resolved attributes works regardless of
+    who imports it, and keeps the suite passing on a clean checkout where
+    models/ is empty because the artifacts are not in source control.
+    """
+    monkeypatch.setattr(handler, "MODEL_PATH", Path(_MODEL_FIXTURE) / "model.joblib")
+    monkeypatch.setattr(
+        handler, "FEATURE_MANIFEST_PATH", Path(_MODEL_FIXTURE) / "feature_manifest.json"
+    )
+    handler.load_artifacts.cache_clear()
+    yield
+    handler.load_artifacts.cache_clear()
 
 
 def load_test_event(name: str) -> dict[str, Any]:
