@@ -5,6 +5,7 @@ import shutil
 import tarfile
 import urllib.parse
 from pathlib import Path
+from typing import Any
 
 import boto3
 import joblib
@@ -23,7 +24,7 @@ REQUIRED_FILES = [
     "training_metadata.json"
 ]
 
-def get_latest_approved_model(sm_client, model_package_group_name):
+def get_latest_approved_model(sm_client: Any, model_package_group_name: str) -> dict[str, Any]:
     # Find models specifically marked Approved
     response = sm_client.list_model_packages(
         ModelPackageGroupName=model_package_group_name,
@@ -35,9 +36,10 @@ def get_latest_approved_model(sm_client, model_package_group_name):
     if not response["ModelPackageSummaryList"]:
         raise ValueError(f"No 'Approved' models found in {model_package_group_name}")
         
-    return response["ModelPackageSummaryList"][0]
+    summary: dict[str, Any] = response["ModelPackageSummaryList"][0]
+    return summary
 
-def validate_artifacts(extract_dir: Path):
+def validate_artifacts(extract_dir: Path) -> None:
     logger.info("Validating artifacts...")
     
     # 1. Missing files
@@ -79,7 +81,7 @@ def validate_artifacts(extract_dir: Path):
         
     logger.info("Artifacts passed all validations.")
 
-def promote_model():
+def promote_model() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-group", type=str, default="ThreatMLModels")
     args = parser.parse_args()

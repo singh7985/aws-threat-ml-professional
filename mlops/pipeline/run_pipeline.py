@@ -30,10 +30,10 @@ try:
     from mlops.pipeline.create_pipeline import get_pipeline
 except ImportError:
     # Fallback for running the file directly from inside mlops/pipeline/.
-    from create_pipeline import get_pipeline
+    from create_pipeline import get_pipeline  # type: ignore[no-redef]
 
 
-def run():
+def run() -> None:
     parser = argparse.ArgumentParser(
         description="Upsert the ThreatML SageMaker pipeline definition into AWS.",
     )

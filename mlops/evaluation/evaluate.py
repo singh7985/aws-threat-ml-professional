@@ -34,7 +34,7 @@ FEATURE_COLUMNS = [
 ]
 TARGET_COLUMN = "label_binary"
 
-def main():
+def main() -> None:
     # SageMaker Processing job mounts inputs here
     model_dir = Path("/opt/ml/processing/model")
     test_dir = Path("/opt/ml/processing/test")

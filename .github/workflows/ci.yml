@@ -37,7 +37,7 @@ jobs:
         run: ruff check .
 
       - name: mypy
-        run: mypy src infrastructure agent
+        run: mypy src services infrastructure agent mlops
 
       - name: Tests
         # Fails the build if coverage drops below the fail_under gate in pyproject.toml.

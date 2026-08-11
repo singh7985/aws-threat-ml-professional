@@ -24,7 +24,7 @@ lint:
 	ruff check .
 
 type:
-	mypy src infrastructure agent
+	mypy src services infrastructure agent mlops
 
 test:
 	pytest --cov=threat_ml --cov-report=term-missing

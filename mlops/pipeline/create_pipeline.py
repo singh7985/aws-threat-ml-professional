@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import sagemaker
 from sagemaker.model_metrics import MetricsSource, ModelMetrics
@@ -35,11 +36,11 @@ except ImportError:
 
 def get_pipeline(
     role: str,
-    pipeline_name="ThreatML-MLOps-Pipeline",
-    sagemaker_session=None,
-    default_bucket=None,
-    model_package_group_name="ThreatMLModels",
-):
+    pipeline_name: str = "ThreatML-MLOps-Pipeline",
+    sagemaker_session: Any = None,
+    default_bucket: str | None = None,
+    model_package_group_name: str = "ThreatMLModels",
+) -> Pipeline:
     from sagemaker.workflow.pipeline_context import PipelineSession
 
     if sagemaker_session is None:
@@ -157,7 +158,9 @@ def get_pipeline(
     from sagemaker.workflow.functions import JsonGet
 
     cond_recall = ConditionGreaterThanOrEqualTo(
-        left=JsonGet(
+        # JsonGet is the documented way to read a PropertyFile in a condition,
+        # but the SDK's type union for `left` omits it.
+        left=JsonGet(  # type: ignore[arg-type]
             step_name=step_evaluate.name,
             property_file=evaluation_report,
             json_path="metrics.recall.value",
@@ -165,7 +168,9 @@ def get_pipeline(
         right=MIN_RECALL,
     )
     cond_precision = ConditionGreaterThanOrEqualTo(
-        left=JsonGet(
+        # JsonGet is the documented way to read a PropertyFile in a condition,
+        # but the SDK's type union for `left` omits it.
+        left=JsonGet(  # type: ignore[arg-type]
             step_name=step_evaluate.name,
             property_file=evaluation_report,
             json_path="metrics.precision.value",
@@ -173,7 +178,9 @@ def get_pipeline(
         right=MIN_PRECISION,
     )
     cond_prauc = ConditionGreaterThanOrEqualTo(
-        left=JsonGet(
+        # JsonGet is the documented way to read a PropertyFile in a condition,
+        # but the SDK's type union for `left` omits it.
+        left=JsonGet(  # type: ignore[arg-type]
             step_name=step_evaluate.name,
             property_file=evaluation_report,
             json_path="metrics.pr_auc.value",

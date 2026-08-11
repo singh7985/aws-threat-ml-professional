@@ -39,7 +39,7 @@ CALIBRATION_FRACTION = 0.20
 RANDOM_STATE = 42
 
 
-def choose_anomaly_threshold(model, calibration_data):
+def choose_anomaly_threshold(model: IsolationForest, calibration_data: pd.DataFrame) -> float:
     """Pick the cutoff that maximises F1 on held-out labelled data.
 
     Returned in suspicion space (``-decision_function``). This replaces
@@ -67,7 +67,7 @@ def choose_anomaly_threshold(model, calibration_data):
     return float(thresholds[int(np.argmax(f1_scores))])
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     
     # SageMaker passes specific environment variables

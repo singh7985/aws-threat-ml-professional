@@ -3,7 +3,7 @@ import json
 import boto3
 
 
-def setup():
+def setup() -> None:
     iam = boto3.client("iam")
     role_name = "ThreatMlSageMakerExecutionRole"
     

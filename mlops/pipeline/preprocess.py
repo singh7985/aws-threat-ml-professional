@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 
 
-def main():
+def main() -> None:
     # Parsed so the script tolerates SageMaker-injected arguments, even though
     # every path below is fixed by the container's mount points.
     argparse.ArgumentParser().parse_known_args()

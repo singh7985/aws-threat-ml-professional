@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import json
 import logging
+from typing import Any
 
 import boto3
 
@@ -12,7 +13,7 @@ logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 logger.addHandler(handler)
 
-def get_latest_model_version(sm_client, model_package_group_name):
+def get_latest_model_version(sm_client: Any, model_package_group_name: str) -> dict[str, Any]:
     response = sm_client.list_model_packages(
         ModelPackageGroupName=model_package_group_name,
         SortBy="CreationTime",
@@ -22,9 +23,10 @@ def get_latest_model_version(sm_client, model_package_group_name):
     if not response["ModelPackageSummaryList"]:
         raise ValueError(f"No models found in {model_package_group_name}")
         
-    return response["ModelPackageSummaryList"][0]
+    summary: dict[str, Any] = response["ModelPackageSummaryList"][0]
+    return summary
 
-def approve_model():
+def approve_model() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-group", type=str, default="ThreatMLModels")
     parser.add_argument("--force", action="store_true", help="Force approval without prompting")
