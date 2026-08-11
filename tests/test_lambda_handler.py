@@ -119,7 +119,11 @@ def test_high_risk_scores_above_normal() -> None:
 def test_message_metadata_reaches_the_stored_incident() -> None:
     """The whole point of the contract: identity survives into DynamoDB."""
     message = parse_message(load_test_event("high_risk_event.json"))
-    incident = build_incident(message, score_features(message.numeric_features()))
+    incident = build_incident(
+        event=message.event,
+        prediction=score_features(message.numeric_features()),
+        features=message.numeric_features(),
+    )
 
     assert incident["principal_id"] == "developer-04"
     assert incident["source_ip"] == "203.0.113.77"
@@ -131,6 +135,48 @@ def test_message_metadata_reaches_the_stored_incident() -> None:
     # Scoring outcome and the exact vector that produced it.
     assert incident["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
     assert set(incident["features"]) == set(message.features)
+
+
+def test_incident_carries_the_full_documented_shape() -> None:
+    message = parse_message(load_test_event("high_risk_event.json"))
+    incident = build_incident(
+        event=message.event,
+        prediction=score_features(message.numeric_features()),
+        features=message.numeric_features(),
+    )
+
+    required = {
+        "incident_id",
+        "event_id",
+        "timestamp",
+        "principal_id",
+        "source_ip",
+        "event_name",
+        "service",
+        "region",
+        "risk_level",
+        "final_risk_score",
+        "anomaly_score",
+        "rule_score",
+        "reasons",
+        "status",
+        "model_version",
+    }
+    assert required <= set(incident), f"missing: {sorted(required - set(incident))}"
+    assert incident["status"] == "OPEN"
+    assert incident["model_version"]
+
+
+def test_incident_id_is_the_event_id_so_writes_are_idempotent() -> None:
+    """SQS delivers at least once; a redelivery must not create a second incident."""
+    message = parse_message(load_test_event("high_risk_event.json"))
+    prediction = score_features(message.numeric_features())
+
+    first = build_incident(event=message.event, prediction=prediction)
+    second = build_incident(event=message.event, prediction=prediction)
+
+    assert first["incident_id"] == first["event_id"] == "evt-high-0001"
+    assert first["incident_id"] == second["incident_id"]
 
 
 def test_naked_feature_vector_is_rejected_with_guidance() -> None:
@@ -151,7 +197,11 @@ def test_individual_identity_fields_may_be_absent() -> None:
     assert message.event.source_ip == "203.0.113.77"
     # Absent fields are omitted from storage, never written as null, so a scan
     # cannot match two incidents on a shared missing value.
-    incident = build_incident(message, score_features(message.numeric_features()))
+    incident = build_incident(
+        event=message.event,
+        prediction=score_features(message.numeric_features()),
+        features=message.numeric_features(),
+    )
     assert "principal_id" not in incident
     assert "service" not in incident
     assert incident["source_ip"] == "203.0.113.77"

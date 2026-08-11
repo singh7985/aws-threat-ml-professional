@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from functools import lru_cache
@@ -15,14 +14,18 @@ import joblib
 import pandas as pd
 from aws_lambda_powertools import Logger, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
+from botocore.exceptions import ClientError
 from pydantic import ValidationError
 from sklearn.ensemble import IsolationForest
 
-from threat_ml.contracts import ScoringMessage
+from threat_ml.contracts import SCHEMA_VERSION, EventContext, ScoringMessage
 from threat_ml.predict_event import (
     read_anomaly_threshold,
     score_feature_vector,
 )
+
+# Investigation workflow state assigned to every new incident.
+INCIDENT_STATUS_OPEN = "OPEN"
 
 # Metadata fields promoted to top-level DynamoDB attributes; anything else the
 # producer supplies is preserved under event_context.
@@ -211,39 +214,53 @@ def _to_dynamo_number(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
-def build_incident(message: ScoringMessage, prediction: dict[str, Any]) -> dict[str, Any]:
-    """Assemble the stored incident from the message and the score.
+def build_incident(
+    *,
+    event: EventContext,
+    prediction: dict[str, Any],
+    features: dict[str, float] | None = None,
+    schema_version: str = SCHEMA_VERSION,
+) -> dict[str, Any]:
+    """Assemble the stored incident from the event context and the score.
 
     Identity is written as **top-level attributes**, not buried in a serialised
     blob. That is what lets the agent correlate incidents, and what a global
     secondary index on principal_id or source_ip would key off later.
+
+    ``incident_id`` is the event id rather than a fresh UUID, which makes the
+    write idempotent. SQS delivers at least once, so the same event can arrive
+    twice; with a random id each delivery became a separate incident and the
+    agent then "correlated" an incident with its own duplicate.
     """
-    event = message.event
     extra = event.model_dump(mode="json", exclude=set(EVENT_CORE_FIELDS))
 
     item: dict[str, Any] = {
-        "incident_id": str(uuid.uuid4()),
-        "schema_version": message.schema_version,
+        "incident_id": event.event_id,
+        "event_id": event.event_id,
+        "schema_version": schema_version,
         # When the incident was scored, distinct from when the event occurred.
         "timestamp": datetime.now(UTC).isoformat(),
         "event_time": event.timestamp.isoformat(),
-        "event_id": event.event_id,
         # --- scoring outcome ---
         "risk_level": prediction["risk_level"],
         "final_risk_score": _to_dynamo_number(prediction["final_risk_score"]),
         "anomaly_score": _to_dynamo_number(prediction["anomaly_score"]),
         "rule_score": _to_dynamo_number(prediction["rule_score"]),
         "model_flagged_anomaly": prediction["model_flagged_anomaly"],
-        "model_version": prediction["model_version"],
+        "model_version": prediction.get("model_version", "unknown"),
         "reasons": prediction["reasons"],
-        # The exact vector that produced the score, kept for explainability.
-        "features": {k: _to_dynamo_number(v) for k, v in message.features.items()},
+        # Investigation workflow state. Every incident starts unreviewed.
+        "status": INCIDENT_STATUS_OPEN,
     }
 
     # Only populated identity fields are written. Absent ones are omitted rather
     # than stored as null, so a correlation scan never matches two incidents on
     # the shared absence of a field.
     item.update(event.correlation_dimensions())
+
+    if features:
+        # The exact vector that produced the score, kept for explainability.
+        item["features"] = {k: _to_dynamo_number(v) for k, v in features.items()}
 
     if extra:
         # Any additional CloudTrail context the producer supplied.
@@ -252,11 +269,33 @@ def build_incident(message: ScoringMessage, prediction: dict[str, Any]) -> dict[
     return item
 
 
-def save_to_dynamodb(item: dict[str, Any]) -> None:
+def save_incident(
+    *,
+    event: EventContext,
+    prediction: dict[str, Any],
+    features: dict[str, float] | None = None,
+    schema_version: str = SCHEMA_VERSION,
+) -> dict[str, Any] | None:
+    """Write one incident, carrying the event context alongside the score.
+
+    Takes the context explicitly rather than only the prediction: the score
+    alone produced incidents with no principal, source IP or event name, which
+    is why the investigator could never correlate anything.
+
+    Returns the stored item, or None when storage is not configured.
+    """
     global _dynamodb
+
+    item = build_incident(
+        event=event,
+        prediction=prediction,
+        features=features,
+        schema_version=schema_version,
+    )
+
     if not INCIDENTS_TABLE:
         LOGGER.warning("INCIDENTS_TABLE_NAME not set; skipping database save.")
-        return
+        return None
     if not _dynamodb:
         _dynamodb = boto3.resource("dynamodb")
 
@@ -268,8 +307,21 @@ def save_to_dynamodb(item: dict[str, Any]) -> None:
             ConditionExpression="attribute_not_exists(incident_id)",
         )
         LOGGER.info("Saved incident to DynamoDB", extra={"incident_id": item["incident_id"]})
-    except Exception as e:
-        LOGGER.error(f"Failed to save incident to DynamoDB: {e!s}")
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            # A redelivery, not a fault: SQS guarantees at-least-once. The
+            # incident already exists and must not be overwritten, which would
+            # discard any triage state a responder has since set.
+            LOGGER.info(
+                "Incident already recorded; skipping duplicate",
+                extra={"incident_id": item["incident_id"]},
+            )
+            return item
+        LOGGER.error(f"Failed to save incident to DynamoDB: {error!s}")
+    except Exception as error:
+        LOGGER.error(f"Failed to save incident to DynamoDB: {error!s}")
+
+    return item
 
 
 def process_sqs_event(event: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
@@ -301,7 +353,12 @@ def process_sqs_event(event: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
             )
 
             # Step 1: Save every prediction to DynamoDB
-            save_to_dynamodb(build_incident(message, result))
+            save_incident(
+                event=message.event,
+                prediction=result,
+                features=message.numeric_features(),
+                schema_version=message.schema_version,
+            )
 
             METRICS.add_metric(
                 name="EventsProcessed",
@@ -373,7 +430,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # and alerting as the SQS path, so both produce identical incidents.
     message = parse_message(event)
     result = score_features(message.numeric_features())
-    save_to_dynamodb(build_incident(message, result))
+    save_incident(
+        event=message.event,
+        prediction=result,
+        features=message.numeric_features(),
+        schema_version=message.schema_version,
+    )
 
     if result.get("risk_level") == "HIGH":
         try:
