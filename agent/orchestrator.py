@@ -29,8 +29,8 @@ from agent.tools.incident_tools import (
 UNKNOWN_SEVERITY = "UNKNOWN"
 
 
-def _as_confidence(value: Any) -> float:
-    """Read the stored risk score as a confidence in the range 0.0-1.0.
+def _as_risk_score(value: Any) -> float:
+    """Read the stored risk score, clamped to the 0.0-1.0 the report requires.
 
     Guards the three ways the stored value can be unusable: absent, non-numeric,
     or NaN/infinite. Any of those would otherwise propagate into the report.
@@ -71,7 +71,7 @@ def investigate(
         incident.get("risk_level") or UNKNOWN_SEVERITY
     )
 
-    score = _as_confidence(
+    score = _as_risk_score(
         incident.get("final_risk_score", 0)
     )
 
@@ -94,5 +94,5 @@ def investigate(
         suspicious_reasons=reasons,
         related_incidents=related,
         recommended_actions=actions,
-        confidence=score,
+        risk_score=score,
     )

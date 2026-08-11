@@ -219,7 +219,7 @@ def test_report_is_valid_structured_json(incidents_table: Any) -> None:
     assert isinstance(payload["suspicious_reasons"], list)
     assert isinstance(payload["related_incidents"], list)
     assert isinstance(payload["recommended_actions"], list)
-    assert isinstance(payload["confidence"], float)
+    assert isinstance(payload["risk_score"], float)
 
     # Round-trips back through validation unchanged.
     assert InvestigationReport.model_validate(payload) == report
@@ -334,13 +334,13 @@ def test_related_incidents_sorted_strongest_first(incidents_table: Any) -> None:
     "incident_id",
     ["inc-high-001", "inc-high-002", "inc-low-001", "inc-scorer-shape"],
 )
-def test_confidence_within_bounds(incidents_table: Any, incident_id: str) -> None:
+def test_risk_score_within_bounds(incidents_table: Any, incident_id: str) -> None:
     report = investigate(InvestigationRequest(incident_id=incident_id))
 
-    assert 0.0 <= report.confidence <= 1.0
+    assert 0.0 <= report.risk_score <= 1.0
 
 
-def test_confidence_survives_out_of_range_stored_score(incidents_table: Any) -> None:
+def test_risk_score_survives_out_of_range_stored_value(incidents_table: Any) -> None:
     """A corrupt stored score must be clamped, not propagated into the report."""
     incidents_table.put_item(
         Item={
@@ -352,15 +352,15 @@ def test_confidence_survives_out_of_range_stored_score(incidents_table: Any) -> 
 
     report = investigate(InvestigationRequest(incident_id="inc-corrupt"))
 
-    assert report.confidence == 1.0
+    assert report.risk_score == 1.0
 
 
-def test_confidence_handles_missing_score(incidents_table: Any) -> None:
+def test_risk_score_handles_missing_value(incidents_table: Any) -> None:
     incidents_table.put_item(Item={"incident_id": "inc-no-score", "risk_level": "LOW"})
 
     report = investigate(InvestigationRequest(incident_id="inc-no-score"))
 
-    assert report.confidence == 0.0
+    assert report.risk_score == 0.0
 
 
 # ---------------------------------------------------------------------------
